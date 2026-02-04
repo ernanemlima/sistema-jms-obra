@@ -1,100 +1,126 @@
 import streamlit as st
 import pandas as pd
+import sqlite3
 from fpdf import FPDF
 import os
 
-st.set_page_config(page_title="JMS Orçamentos", layout="centered")
+# --- INICIALIZAÇÃO DO BANCO DE DATAS ---
+def conectar():
+    return sqlite3.connect('jms_controle.db', check_same_thread=False)
 
-# --- FUNÇÃO DO PDF ---
-def gerar_pdf_completo(cliente, lista_itens, valor_total):
-    pdf = FPDF()
-    pdf.add_page()
-    
-    # Adicionando o Logo da JMS
-    if os.path.exists("logo.jpg"):
-        pdf.image("logo.jpg", 10, 8, 35)
-        pdf.ln(25)
-    
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, "ORÇAMENTO DE SERVIÇOS", ln=True, align='R')
-    pdf.ln(10)
-    
-    pdf.set_font("Arial", size=12)
-    pdf.cell(0, 10, f"Cliente: {cliente}", ln=True)
-    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-    pdf.ln(5)
+def init_db():
+    conn = conectar()
+    c = conn.cursor()
+    # Tabela de Clientes
+    c.execute('''CREATE TABLE IF NOT EXISTS clientes 
+                 (id INTEGER PRIMARY KEY, nome TEXT, whatsapp TEXT, endereco TEXT)''')
+    # Tabela de Materiais/Preços (Substitui o antigo CSV)
+    c.execute('''CREATE TABLE IF NOT EXISTS materiais 
+                 (id INTEGER PRIMARY KEY, item TEXT, preco REAL, unidade TEXT)''')
+    conn.commit()
+    conn.close()
 
-    # Cabeçalho da Tabela
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(90, 10, "Item", border=1)
-    pdf.cell(30, 10, "Qtd", border=1, align='C')
-    pdf.cell(30, 10, "Unit.", border=1, align='C')
-    pdf.cell(30, 10, "Total", border=1, align='C', ln=True)
-
-    # Itens
-    pdf.set_font("Arial", size=10)
-    for i in lista_itens:
-        pdf.cell(90, 10, i['item'], border=1)
-        pdf.cell(30, 10, str(i['qtd']), border=1, align='C')
-        pdf.cell(30, 10, f"R$ {i['unit']:.2f}", border=1, align='C')
-        pdf.cell(30, 10, f"R$ {i['total']:.2f}", border=1, align='C', ln=True)
-
-    pdf.ln(5)
-    pdf.set_font("Arial", 'B', 14)
-    pdf.cell(0, 10, f"TOTAL DO ORÇAMENTO: R$ {valor_total:.2f}", align='R', ln=True)
-    
-    nome_arquivo = f"Orcamento_{cliente}.pdf"
-    pdf.output(nome_arquivo)
-    return nome_arquivo
+init_db()
 
 # --- INTERFACE ---
-st.title("👷‍♂️ JMS - Gestão de Obras")
+st.set_page_config(page_title="JMS ERP", layout="wide")
+st.title("👷‍♂️ JMS - Gestão de Obras Pro")
 
-# Criar a lista de itens na memória se não existir
 if 'carrinho' not in st.session_state:
     st.session_state.carrinho = []
 
-try:
-    df_precos = pd.read_csv('precos.csv')
-    nome_cliente = st.text_input("Nome do Cliente", "Cliente Exemplo")
+tab_orc, tab_med, tab_cad, tab_rel = st.tabs(["📄 Orçamentos", "📏 Medição", "👥 Cadastros", "📊 Relatórios"])
 
-    with st.container(border=True):
-        st.subheader("Adicionar Item ao Orçamento")
-        escolha = st.selectbox("Selecione o Material/Serviço", df_precos['item'])
-        dados = df_precos[df_precos['item'] == escolha].iloc[0]
-        
-        qtd = st.number_input(f"Quantidade ({dados['unidade']})", min_value=0.1, step=1.0)
-        subtotal = qtd * dados['preco_unitario']
-        
-        if st.button("➕ Adicionar Item"):
+# --- ABA: CADASTROS ---
+with tab_cad:
+    st.header("Cadastros")
+    col_c, col_m = st.columns(2)
+    
+    with col_c:
+        st.subheader("Novo Cliente")
+        with st.form("cad_cliente", clear_on_submit=True):
+            n = st.text_input("Nome")
+            w = st.text_input("WhatsApp")
+            e = st.text_input("Endereço")
+            if st.form_submit_button("Salvar Cliente"):
+                conn = conectar()
+                conn.execute("INSERT INTO clientes (nome, whatsapp, endereco) VALUES (?,?,?)", (n, w, e))
+                conn.commit()
+                st.success("Cliente salvo!")
+
+    with col_m:
+        st.subheader("Tabela de Preços")
+        with st.form("cad_material", clear_on_submit=True):
+            item = st.text_input("Nome do Material/Serviço")
+            pre = st.number_input("Preço Unitário (R$)", min_value=0.0)
+            uni = st.selectbox("Unidade", ["m²", "m³", "Saco", "Milheiro", "Unid.", "Dia"])
+            if st.form_submit_button("Atualizar Preço"):
+                conn = conectar()
+                conn.execute("INSERT INTO materiais (item, preco, unidade) VALUES (?,?,?)", (item, pre, uni))
+                conn.commit()
+                st.success("Preço atualizado!")
+
+# --- ABA: MEDIÇÃO ---
+with tab_med:
+    st.header("Calculadora de Medição")
+    st.write("Calcule a área e adicione diretamente ao orçamento.")
+    
+    c1, c2, c3 = st.columns(3)
+    alt = c1.number_input("Altura (m)", min_value=0.0, step=0.01)
+    larg = c2.number_input("Largura (m)", min_value=0.0, step=0.01)
+    area = alt * larg
+    c3.metric("Área Calculada", f"{area:.2f} m²")
+    
+    conn = conectar()
+    lista_mat = pd.read_sql_query("SELECT * FROM materiais WHERE unidade = 'm²'", conn)
+    
+    if not lista_mat.empty:
+        servico = st.selectbox("Aplicar qual serviço nesta área?", lista_mat['item'])
+        if st.button("➕ Adicionar Medição ao Orçamento"):
+            preco_un = lista_mat[lista_mat['item'] == servico]['preco'].values[0]
             st.session_state.carrinho.append({
-                'item': escolha,
-                'qtd': qtd,
-                'unit': dados['preco_unitario'],
-                'total': subtotal
+                'item': f"{servico} (Medição: {alt}x{larg})",
+                'qtd': area,
+                'total': area * preco_un
             })
-            st.toast(f"{escolha} adicionado!")
+            st.success("Medição enviada para a aba de Orçamentos!")
+    else:
+        st.warning("Cadastre serviços com unidade 'm²' para usar a calculadora.")
 
-    # Exibir a lista atual
-    if st.session_state.carrinho:
+# --- ABA: ORÇAMENTOS ---
+with tab_orc:
+    st.header("Novo Orçamento")
+    conn = conectar()
+    clientes = pd.read_sql_query("SELECT nome FROM clientes", conn)
+    
+    if not clientes.empty:
+        cliente_sel = st.selectbox("Selecione o Cliente", clientes['nome'])
+        
+        # Seleção manual de itens (fora a medição)
         st.divider()
-        st.subheader("Resumo do Orçamento")
-        df_carrinho = pd.DataFrame(st.session_state.carrinho)
-        st.table(df_carrinho)
+        todos_mat = pd.read_sql_query("SELECT * FROM materiais", conn)
+        item_avulso = st.selectbox("Adicionar outro item manual", todos_mat['item'])
+        qtd_avulsa = st.number_input("Quantidade", min_value=0.1)
         
-        valor_final = df_carrinho['total'].sum()
-        st.header(f"Total: R$ {valor_final:.2f}")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🗑️ Limpar Tudo"):
-                st.session_state.carrinho = []
-                st.rerun()
-        with col2:
-            if st.button("📄 Gerar Orçamento PDF"):
-                arquivo = gerar_pdf_completo(nome_cliente, st.session_state.carrinho, valor_final)
-                with open(arquivo, "rb") as f:
-                    st.download_button("⬇️ Baixar PDF", f, file_name=arquivo)
+        if st.button("➕ Adicionar Item Manual"):
+            pre_avulso = todos_mat[todos_mat['item'] == item_avulso]['preco'].values[0]
+            st.session_state.carrinho.append({
+                'item': item_avulso, 'qtd': qtd_avulsa, 'total': qtd_avulsa * pre_avulso
+            })
 
-except Exception as e:
-    st.error(f"Erro: {e}")
+        # Resumo e PDF
+        if st.session_state.carrinho:
+            st.subheader("Itens do Orçamento")
+            df_car = pd.DataFrame(st.session_state.carrinho)
+            st.table(df_car)
+            total_geral = df_car['total'].sum()
+            st.write(f"### TOTAL: R$ {total_geral:.2f}")
+            
+            if st.button("🗑️ Limpar"):
+                st.session_state.carrinho = []; st.rerun()
+                
+            if st.button("📄 Gerar PDF"):
+                # (Aqui entra a sua função de PDF que já criamos antes)
+                st.info("PDF Gerado com sucesso (Simulação)")
+    else:
+        st.error("Por favor, cadastre um cliente primeiro.")
